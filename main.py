@@ -1,121 +1,224 @@
 import discord
-from discord.ext import commands
 import os
-from flask import Flask
+import requests
+import json
 import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # =========================
-# 🔹 KEEP ALIVE (Render)
+# 🔑 CONFIG
 # =========================
-app = Flask('')
+TOKEN = os.getenv("DISCORD_TOKEN")
+API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-@app.route('/')
-def home():
-    return "Nymeria está viva 👁️"
-
-def run_web():
-    app.run(host='0.0.0.0', port=10000)
-
-def keep_alive():
-    t = threading.Thread(target=run_web)
-    t.start()
+MODELOS = [
+    "meta-llama/llama-3-8b-instruct:free",
+    "openchat/openchat-7b:free"
+]
 
 # =========================
-# 🔹 CARREGAR MEMÓRIA TXT
+# 📜 MEMÓRIA BASE (.txt)
 # =========================
-def load_txt(filename):
-    try:
-        with open(filename, "r", encoding="utf-8") as f:
-            return f.read()
-    except:
+def ler(nome):
+    if not os.path.exists(nome):
         return ""
+    with open(nome, "r", encoding="utf-8") as f:
+        return f.read()
 
-NYMERIA_CORE = load_txt("nymeria_core.txt")
-NYMERIA_ESTILO = load_txt("nymeria_estilo.txt")
-NYMERIA_LORE = load_txt("nymeria_lore.txt")
-NYMERIA_RELACOES = load_txt("nymeria_relacoes.txt")
-NYMERIA_MEMORIA = load_txt("nymeria_memoria_rpg.txt")
+def memoria_base():
+    return (
+        ler("nymeria_core.txt") +
+        ler("nymeria_estilo.txt") +
+        ler("nymeria_lore.txt") +
+        ler("nymeria_relacoes.txt") +
+        ler("nymeria_memoria_rpg.txt")
+    )[-8000:]
 
-BASE_CONTEXT = f"""
-{NYMERIA_CORE}
+# =========================
+# 🧠 MEMÓRIA USUÁRIOS
+# =========================
+def carregar_memoria():
+    if not os.path.exists("memoria_usuarios.json"):
+        return {}
+    with open("memoria_usuarios.json", "r", encoding="utf-8") as f:
+        return json.load(f)
 
-{NYMERIA_ESTILO}
+def salvar_memoria(mem):
+    with open("memoria_usuarios.json", "w", encoding="utf-8") as f:
+        json.dump(mem, f, indent=2, ensure_ascii=False)
 
-{NYMERIA_LORE}
+# =========================
+# 🔥 MEMÓRIA EVENTOS
+# =========================
+def carregar_eventos():
+    if not os.path.exists("memoria_eventos.json"):
+        return {}
+    with open("memoria_eventos.json", "r", encoding="utf-8") as f:
+        return json.load(f)
 
-{NYMERIA_RELACOES}
+def salvar_eventos(mem):
+    with open("memoria_eventos.json", "w", encoding="utf-8") as f:
+        json.dump(mem, f, indent=2, ensure_ascii=False)
 
-{NYMERIA_MEMORIA}
+def adicionar_evento(user_id, evento):
+    eventos = carregar_eventos()
+
+    if user_id not in eventos:
+        eventos[user_id] = []
+
+    eventos[user_id].append(evento)
+    eventos[user_id] = eventos[user_id][-10:]
+
+    salvar_eventos(eventos)
+
+# =========================
+# 🧠 ATUALIZA MEMÓRIA
+# =========================
+def atualizar_memoria(user_id, username, mensagem):
+    mem = carregar_memoria()
+
+    if user_id not in mem:
+        mem[user_id] = {
+            "nome": username,
+            "afinidade": 0,
+            "emocao": "neutra",
+            "historico": []
+        }
+
+    dados = mem[user_id]
+    msg = mensagem.lower()
+
+    # Afinidade
+    if any(p in msg for p in ["amo", "gosto", "confio"]):
+        dados["afinidade"] += 1
+    elif any(p in msg for p in ["odeio", "idiota"]):
+        dados["afinidade"] -= 1
+
+    # Emoção
+    if "?" in msg:
+        dados["emocao"] = "curiosa"
+    elif "!" in msg:
+        dados["emocao"] = "intensa"
+    else:
+        dados["emocao"] = "serena"
+
+    # Histórico
+    dados["historico"].append(f"{username}: {mensagem}")
+    dados["historico"] = dados["historico"][-8:]
+
+    # Eventos
+    if "confio" in msg:
+        adicionar_evento(user_id, f"{username} demonstrou confiança")
+
+    if "ragnar" in msg:
+        adicionar_evento(user_id, f"{username} mencionou Ragnar")
+
+    salvar_memoria(mem)
+    return dados
+
+# =========================
+# 🤖 IA
+# =========================
+def chamar_ia(msg, user_id, username):
+    base = memoria_base()
+    dados = atualizar_memoria(user_id, username, msg)
+    eventos = carregar_eventos().get(user_id, [])
+
+    contexto = f"""
+Nome: {dados['nome']}
+Afinidade: {dados['afinidade']}
+Emoção: {dados['emocao']}
+
+Histórico:
+{' | '.join(dados['historico'])}
+
+Eventos:
+{' | '.join(eventos)}
 """
 
+    prompt = f"""
+{contexto}
+
+Mensagem:
+{msg}
+
+Responda como Nymeria.
+"""
+
+    payload = [
+        {"role": "system", "content": base},
+        {"role": "user", "content": prompt}
+    ]
+
+    for modelo in MODELOS:
+        try:
+            r = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": modelo,
+                    "messages": payload,
+                    "temperature": 0.9,
+                    "max_tokens": 500
+                }
+            )
+
+            data = r.json()
+
+            if "choices" in data:
+                return data["choices"][0]["message"]["content"]
+
+        except:
+            continue
+
+    return "*Nymeria permanece em silêncio...*"
+
 # =========================
-# 🔹 DISCORD BOT
+# 💬 DISCORD
 # =========================
 intents = discord.Intents.default()
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+client = discord.Client(intents=intents)
 
-@bot.event
+@client.event
 async def on_ready():
-    print(f"✅ Nymeria conectada como {bot.user}")
+    print(f"🔥 Nymeria online como {client.user}")
 
-@bot.event
+@client.event
 async def on_message(message):
-    if message.author == bot.user:
+    if message.author.bot:
         return
 
-    user_msg = message.content
+    if "nymeria" not in message.content.lower():
+        return
 
-    # resposta simples (teste)
-    if "oi" in user_msg.lower():
-        await message.channel.send("Nymeria observa você... 👁️")
+    user_id = str(message.author.id)
+    username = message.author.display_name
 
-    # =========================
-    # 🔹 OPENROUTER (IA)
-    # =========================
-    import requests
+    async with message.channel.typing():
+        resposta = chamar_ia(message.content, user_id, username)
 
-    headers = {
-        "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
-        "Content-Type": "application/json"
-    }
-
-    data = {
-        "model": "openrouter/auto",
-        "messages": [
-            {
-                "role": "system",
-                "content": BASE_CONTEXT
-            },
-            {
-                "role": "user",
-                "content": user_msg
-            }
-        ]
-    }
-
-    try:
-        response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers,
-            json=data
-        )
-
-        result = response.json()
-        reply = result["choices"][0]["message"]["content"]
-
-        await message.channel.send(reply[:2000])
-
-    except Exception as e:
-        print("Erro IA:", e)
-
-    await bot.process_commands(message)
+    await message.channel.send(resposta[:2000])
 
 # =========================
-# 🔹 INICIAR
+# 🌐 KEEP ALIVE (Render)
 # =========================
-keep_alive()
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Nymeria alive")
 
-TOKEN = os.getenv("TOKEN")
-bot.run(TOKEN)
+def server():
+    HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+
+# =========================
+# 🚀 START
+# =========================
+if __name__ == "__main__":
+    threading.Thread(target=server).start()
+    client.run(TOKEN)
