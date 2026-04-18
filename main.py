@@ -11,13 +11,14 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 # =========================
 TOKEN = os.getenv("TOKEN")
 API_KEY = os.getenv("OPENROUTER_API_KEY")
+
 MODELOS = [
     "meta-llama/llama-3-8b-instruct:free",
     "openchat/openchat-7b:free"
 ]
 
-CANAL_PERMITIDO = None
 bot_ativo = True
+CANAL_PERMITIDO = None
 
 # =========================
 # LEITURA DE ARQUIVOS
@@ -36,7 +37,8 @@ def carregar_memoria_total():
         ler_arquivo("nymeria_core.txt") + "\n\n" +
         ler_arquivo("nymeria_estilo.txt") + "\n\n" +
         ler_arquivo("nymeria_lore.txt") + "\n\n" +
-        ler_arquivo("nymeria_relacoes.txt")
+        ler_arquivo("nymeria_relacoes.txt") + "\n\n" +
+        ler_arquivo("nymeria_memoria_rpg.txt")
     )[-8000:]
 
 # =========================
@@ -90,10 +92,10 @@ def atualizar_memoria(user_id, username, mensagem):
     else:
         dados["emocao"] = "serena"
 
-    # Histórico
+    # Histórico (últimas 10 mensagens)
     dados["historico"].append(f"{username}: {mensagem}")
-    if len(dados["historico"]) > 6:
-        dados["historico"] = dados["historico"][-6:]
+    if len(dados["historico"]) > 10:
+        dados["historico"] = dados["historico"][-10:]
 
     salvar_memoria_users(memoria_users)
     return dados
@@ -105,14 +107,17 @@ def chamar_ia(mensagem, user_id, username):
     memoria_base = carregar_memoria_total()
     dados = atualizar_memoria(user_id, username, mensagem)
 
-    contexto = f"""
-Nome: {dados['nome']}
-Afinidade: {dados['afinidade']}
-Emoção: {dados['emocao']}
-Histórico recente: {' | '.join(dados['historico'])}
-"""
+    historico = "\n".join(dados["historico"][-6:])
 
-    prompt_usuario = contexto + "\n\nMensagem recebida: " + mensagem
+    prompt_usuario = f"""
+Contexto recente da conversa:
+{historico}
+
+Mensagem atual:
+{mensagem}
+
+Responda como Nymeria, continuando naturalmente a conversa.
+"""
 
     payload = [
         {
@@ -168,7 +173,7 @@ client = discord.Client(intents=intents)
 
 @client.event
 async def on_ready():
-    print("Nymeria online.")
+    print(f"Nymeria online como {client.user}")
 
 @client.event
 async def on_message(message):
@@ -182,12 +187,12 @@ async def on_message(message):
     # COMANDOS
     if conteudo == "noff!":
         bot_ativo = False
-        await message.channel.send("*Nymeria se desfaz em folhas e sombras...*")
+        await message.channel.send("*Nymeria se desfaz em folhas e silêncio...*")
         return
 
     if conteudo == "non!":
         bot_ativo = True
-        await message.channel.send("*Nymeria surge novamente, a presença suave e envolvente...*")
+        await message.channel.send("*Nymeria retorna, sua presença suave preenchendo o ambiente...*")
         return
 
     if not bot_ativo:
@@ -216,7 +221,7 @@ async def on_message(message):
             await message.channel.send(resposta[i:i+1900])
 
 # =========================
-# KEEP ALIVE (Render/Uptime)
+# KEEP ALIVE (Render)
 # =========================
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
