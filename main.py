@@ -6,9 +6,6 @@ import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# =========================
-# CONFIG
-# =========================
 TOKEN = os.getenv("TOKEN")
 API_KEY = os.getenv("OPENROUTER_API_KEY")
 
@@ -20,81 +17,140 @@ MODELOS = [
 bot_ativo = True
 
 # =========================
-# MEMÓRIA BASE (TXT)
+# MEMÓRIA BASE
 # =========================
-def ler_arquivo(nome):
+def ler(nome):
     if not os.path.exists(nome):
         return ""
     with open(nome, "r", encoding="utf-8") as f:
         return f.read()
 
-def carregar_memoria_base():
+def memoria_base():
     return (
-        ler_arquivo("nymeria_core.txt") + "\n\n" +
-        ler_arquivo("nymeria_estilo.txt") + "\n\n" +
-        ler_arquivo("nymeria_lore.txt") + "\n\n" +
-        ler_arquivo("nymeria_relacoes.txt") + "\n\n" +
-        ler_arquivo("nymeria_memoria_rpg.txt")
+        ler("nymeria_core.txt") +
+        ler("nymeria_estilo.txt") +
+        ler("nymeria_lore.txt") +
+        ler("nymeria_relacoes.txt") +
+        ler("nymeria_memoria_rpg.txt")
     )[-8000:]
 
 # =========================
-# MEMÓRIA DINÂMICA (JSON)
+# MEMÓRIA USUÁRIOS
 # =========================
-def carregar_memoria_json():
-    if not os.path.exists("memoria.json"):
-        return []
-    try:
-        with open("memoria.json", "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return []
+def carregar_memoria():
+    if not os.path.exists("memoria_usuarios.json"):
+        return {}
+    with open("memoria_usuarios.json", "r", encoding="utf-8") as f:
+        return json.load(f)
 
-def salvar_memoria_json(memoria):
-    with open("memoria.json", "w", encoding="utf-8") as f:
-        json.dump(memoria, f, ensure_ascii=False, indent=2)
+def salvar_memoria(mem):
+    with open("memoria_usuarios.json", "w", encoding="utf-8") as f:
+        json.dump(mem, f, indent=2, ensure_ascii=False)
 
-def adicionar_memoria(user, mensagem):
-    memoria = carregar_memoria_json()
+# =========================
+# MEMÓRIA EVENTOS
+# =========================
+def carregar_eventos():
+    if not os.path.exists("memoria_eventos.json"):
+        return {}
+    with open("memoria_eventos.json", "r", encoding="utf-8") as f:
+        return json.load(f)
 
-    memoria.append({
-        "user": user,
-        "mensagem": mensagem
-    })
+def salvar_eventos(mem):
+    with open("memoria_eventos.json", "w", encoding="utf-8") as f:
+        json.dump(mem, f, indent=2, ensure_ascii=False)
 
-    # Limite pra não crescer infinito
-    memoria = memoria[-50:]
+def adicionar_evento(user_id, evento):
+    eventos = carregar_eventos()
 
-    salvar_memoria_json(memoria)
+    if user_id not in eventos:
+        eventos[user_id] = []
 
-def pegar_contexto_recente():
-    memoria = carregar_memoria_json()
-    ultimas = memoria[-10:]
+    eventos[user_id].append(evento)
+    eventos[user_id] = eventos[user_id][-10:]
 
-    texto = ""
-    for m in ultimas:
-        texto += f"{m['user']}: {m['mensagem']}\n"
+    salvar_eventos(eventos)
 
-    return texto.strip()
+# =========================
+# ATUALIZA MEMÓRIA
+# =========================
+def atualizar_memoria(user_id, username, mensagem):
+    mem = carregar_memoria()
+
+    if user_id not in mem:
+        mem[user_id] = {
+            "nome": username,
+            "afinidade": 0,
+            "emocao": "neutra",
+            "historico": []
+        }
+
+    dados = mem[user_id]
+    msg = mensagem.lower()
+
+    # Afinidade
+    if any(p in msg for p in ["amo", "gosto", "confio"]):
+        dados["afinidade"] += 1
+    elif any(p in msg for p in ["odeio", "idiota"]):
+        dados["afinidade"] -= 1
+
+    # Emoção
+    if "?" in msg:
+        dados["emocao"] = "curiosa"
+    elif "!" in msg:
+        dados["emocao"] = "intensa"
+    else:
+        dados["emocao"] = "serena"
+
+    # Histórico
+    dados["historico"].append(f"{username}: {mensagem}")
+    dados["historico"] = dados["historico"][-8:]
+
+    # EVENTOS IMPORTANTES
+    if any(p in msg for p in ["confio", "segredo", "importante"]):
+        adicionar_evento(user_id, f"{username} compartilhou algo importante")
+
+    if any(p in msg for p in ["te desafio", "duelo"]):
+        adicionar_evento(user_id, f"{username} provocou Nymeria")
+
+    if any(p in msg for p in ["obrigado", "valeu"]):
+        adicionar_evento(user_id, f"{username} demonstrou gratidão")
+
+    salvar_memoria(mem)
+    return dados
 
 # =========================
 # IA
 # =========================
-def chamar_ia(mensagem, user):
-    memoria_base = carregar_memoria_base()
-    contexto = pegar_contexto_recente()
+def chamar_ia(msg, user_id, username):
+    base = memoria_base()
+    dados = atualizar_memoria(user_id, username, msg)
+    eventos = carregar_eventos().get(user_id, [])
+
+    contexto = f"""
+Nome: {dados['nome']}
+Afinidade: {dados['afinidade']}
+Emoção: {dados['emocao']}
+
+Histórico recente:
+{' | '.join(dados['historico'])}
+
+Eventos importantes:
+{' | '.join(eventos)}
+"""
 
     prompt = f"""
-Contexto recente:
 {contexto}
 
-Mensagem atual:
-{user}: {mensagem}
+Mensagem:
+{msg}
 
-Responda como Nymeria, continuando naturalmente.
+Responda como Nymeria.
+Use memória, eventos e afinidade.
 """
 
     payload = [
-        {"role": "system", "content": memoria_base},
+        {"role": "system", "content": base},
         {"role": "user", "content": prompt}
     ]
 
@@ -129,12 +185,11 @@ Responda como Nymeria, continuando naturalmente.
 # =========================
 intents = discord.Intents.default()
 intents.message_content = True
-
 client = discord.Client(intents=intents)
 
 @client.event
 async def on_ready():
-    print("Nymeria online.")
+    print("Nymeria nível 3 online.")
 
 @client.event
 async def on_message(message):
@@ -143,14 +198,14 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    msg = message.content
+    msg = message.content.lower()
 
-    if msg.lower() == "noff!":
+    if msg == "noff!":
         bot_ativo = False
-        await message.channel.send("*Nymeria se dissolve...*")
+        await message.channel.send("*Nymeria desaparece...*")
         return
 
-    if msg.lower() == "non!":
+    if msg == "non!":
         bot_ativo = True
         await message.channel.send("*Nymeria retorna...*")
         return
@@ -158,23 +213,19 @@ async def on_message(message):
     if not bot_ativo:
         return
 
-    if "nymeria" not in msg.lower():
+    if "nymeria" not in msg:
         return
 
-    user = message.author.display_name
-
-    # salva mensagem do usuário
-    adicionar_memoria(user, msg)
+    user_id = str(message.author.id)
+    username = message.author.display_name
 
     async with message.channel.typing():
         resposta = await asyncio.to_thread(
             chamar_ia,
-            msg,
-            user
+            message.content,
+            user_id,
+            username
         )
-
-    # salva resposta da Nymeria
-    adicionar_memoria("Nymeria", resposta)
 
     await message.channel.send(resposta[:2000])
 
