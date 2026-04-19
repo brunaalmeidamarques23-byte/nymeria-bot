@@ -1,25 +1,26 @@
 import discord
 import os
 import requests
+import asyncio
 
 # ===== CONFIG =====
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not DISCORD_TOKEN:
-    raise Exception("❌ DISCORD_TOKEN não encontrado nas variáveis de ambiente")
+    raise Exception("❌ DISCORD_TOKEN não encontrado")
 
 if not GROQ_API_KEY:
-    raise Exception("❌ GROQ_API_KEY não encontrado nas variáveis de ambiente")
+    raise Exception("❌ GROQ_API_KEY não encontrado")
 
-# ===== DISCORD SETUP =====
+# ===== DISCORD =====
 intents = discord.Intents.default()
 intents.message_content = True
 
 bot = discord.Client(intents=intents)
 
-# ===== IA (GROQ) =====
-def perguntar_ia(mensagem):
+# ===== IA (RODA EM THREAD PRA NÃO TRAVAR) =====
+def perguntar_ia_sync(mensagem):
     url = "https://api.groq.com/openai/v1/chat/completions"
 
     headers = {
@@ -32,7 +33,7 @@ def perguntar_ia(mensagem):
         "messages": [
             {
                 "role": "system",
-                "content": "Você é Nymeria, uma IA sombria, elegante e levemente sarcástica de um mundo medieval de fantasia."
+                "content": "Você é Nymeria, uma IA sombria, elegante e levemente sarcástica."
             },
             {
                 "role": "user",
@@ -41,12 +42,22 @@ def perguntar_ia(mensagem):
         ]
     }
 
-    response = requests.post(url, headers=headers, json=data)
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=30)
 
-    if response.status_code != 200:
-        return "⚠️ Erro ao chamar a IA."
+        if response.status_code != 200:
+            print("Erro Groq:", response.text)
+            return "⚠️ A IA não respondeu corretamente."
 
-    return response.json()["choices"][0]["message"]["content"]
+        return response.json()["choices"][0]["message"]["content"]
+
+    except Exception as e:
+        print("Erro:", e)
+        return "⚠️ Erro ao conectar com a IA."
+
+# versão async
+async def perguntar_ia(mensagem):
+    return await asyncio.to_thread(perguntar_ia_sync, mensagem)
 
 # ===== EVENTOS =====
 @bot.event
@@ -55,18 +66,16 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    if message.author == bot.user:
+    if message.author.bot:
         return
 
     msg = message.content.lower()
 
-    # resposta simples
     if msg == "oi":
-        await message.channel.send("👁️ Nymeria observa você... diga o que deseja.")
+        await message.channel.send("👁️ Nymeria observa você...")
         return
 
-    # chamada da IA
-    resposta = perguntar_ia(message.content)
+    resposta = await perguntar_ia(message.content)
     await message.channel.send(resposta)
 
 # ===== START =====
